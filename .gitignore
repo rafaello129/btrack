@@ -18,10 +18,27 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+*.spec
+*.exe
+*.dll
+*.pkg
+*.apk
+*.aab
+*.ipa
 
 # Runtime/logs
 logs/
 *.log
+
+# Android/Gradle
+.gradle/
+.tools/
+local.properties
+keystore.properties
+captures/
+*.keystore
+*.jks
+*/build/
 
 # IDE / OS
 .vscode/

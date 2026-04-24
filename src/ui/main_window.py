@@ -6,7 +6,9 @@ from time import perf_counter
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from pathlib import Path
+from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, Property, QUrl
+from PySide6.QtGui import QIcon, QPixmap, QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -25,7 +27,9 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QGraphicsOpacityEffect,
 )
+from PySide6.QtMultimedia import QSoundEffect
 
 from src.application.analyze_face_use_case import AnalyzeFaceUseCase
 from src.domain.models.face_metrics import AnalysisResult, AnalysisStatus, SymmetryMetrics
@@ -53,8 +57,13 @@ class MainWindow(QMainWindow):
         self.logger = logging.getLogger(self.__class__.__name__)
 
         self.setObjectName("MainWindow")
-        self.setWindowTitle("B-Track | Monitoreo y analisis temprano de simetria facial")
+        self.setWindowTitle("NeuroFace | Monitoreo y analisis temprano de simetria facial")
         self.resize(1520, 900)
+        
+        # Configurar icono de la ventana
+        icon_path = Path(__file__).parent.parent / "img" / "neuroface-icon-256.png"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
 
         self.webcam_service = WebcamService()
         self.face_detector = MediapipeFaceDetector(profile="quality", static_image_mode=False)
@@ -86,6 +95,15 @@ class MainWindow(QMainWindow):
         self.body_splitter: QSplitter | None = None
         self.left_splitter: QSplitter | None = None
         self.right_column_widget: QWidget | None = None
+        
+        # Animaciones y efectos
+        self._thinking_timer: QTimer | None = None
+        self._thinking_dots = 0
+        self._pulse_animation: QPropertyAnimation | None = None
+        self._thinking_indicator: QLabel | None = None
+        
+        # Sonidos
+        self._setup_sounds()
 
         self._build_ui()
         self._populate_camera_indices()
@@ -95,13 +113,27 @@ class MainWindow(QMainWindow):
             "Sistema listo para captura",
             "Carga una imagen frontal o activa la camara para iniciar el tamizaje.",
         )
+        
+        # Abrir maximizado después de construir la UI
+        self.showMaximized()
+    
+    def _setup_sounds(self) -> None:
+        """Configura efectos de sonido."""
+        self._sound_analyzing: QSoundEffect | None = None
+        self._sound_success: QSoundEffect | None = None
+        self._sound_warning: QSoundEffect | None = None
+        
+        # Los sonidos se cargarán si existen
+        sounds_path = Path(__file__).parent.parent / "sounds"
+        if not sounds_path.exists():
+            sounds_path.mkdir(parents=True, exist_ok=True)
 
     def _build_ui(self) -> None:
         container = QWidget(self)
         self.setCentralWidget(container)
 
         root = QVBoxLayout(container)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(0)
 
         shell = QFrame()
@@ -110,8 +142,8 @@ class MainWindow(QMainWindow):
         root.addWidget(shell, 1)
 
         shell_layout = QVBoxLayout(shell)
-        shell_layout.setContentsMargins(8, 8, 8, 8)
-        shell_layout.setSpacing(14)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(16)
 
         shell_layout.addWidget(self._build_top_bar())
 
@@ -123,8 +155,9 @@ class MainWindow(QMainWindow):
         self.body_splitter.setChildrenCollapsible(False)
         self.body_splitter.addWidget(left_column)
         self.body_splitter.addWidget(right_column)
-        self.body_splitter.setStretchFactor(0, 5)
-        self.body_splitter.setStretchFactor(1, 2)
+        self.body_splitter.setStretchFactor(0, 3)  # Izquierda 30%
+        self.body_splitter.setStretchFactor(1, 7)  # Derecha 70%
+        self.body_splitter.setHandleWidth(8)  # Handle más ancho para arrastrar fácilmente
         shell_layout.addWidget(self.body_splitter, 1)
 
         self._apply_responsive_geometry()
@@ -134,23 +167,51 @@ class MainWindow(QMainWindow):
         frame.setObjectName("TopBar")
 
         layout = QHBoxLayout(frame)
-        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setContentsMargins(24, 20, 24, 20)
 
-        brand = QVBoxLayout()
-        title = QLabel("B-Track")
+        # Logo y branding con fondo negro
+        brand = QHBoxLayout()
+        brand.setSpacing(20)
+        
+        # Logo más grande con fondo negro
+        logo_container = QFrame()
+        logo_container.setObjectName("LogoContainer")
+        logo_container.setFixedSize(90, 70)
+        logo_container_layout = QHBoxLayout(logo_container)
+        logo_container_layout.setContentsMargins(0, 0, 0, 0)
+        
+        logo_label = QLabel()
+        logo_label.setObjectName("LogoLabel")
+        logo_path = Path(__file__).parent.parent / "img" / "neuroface-header.png"
+        if logo_path.exists():
+            logo_pixmap = QPixmap(str(logo_path))
+            scaled_logo = logo_pixmap.scaledToHeight(60, Qt.TransformationMode.SmoothTransformation)
+            logo_label.setPixmap(scaled_logo)
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_container_layout.addWidget(logo_label)
+        brand.addWidget(logo_container)
+        
+        # Textos de marca
+        brand_text = QVBoxLayout()
+        brand_text.setSpacing(4)
+        title = QLabel("NEUROFACE")
         title.setObjectName("BrandTitle")
-        subtitle = QLabel("Monitoreo y analisis temprano de simetria facial")
+        subtitle = QLabel("Monitoreo y análisis temprano de simetría facial")
         subtitle.setObjectName("BrandSubtitle")
-        brand.addWidget(title)
-        brand.addWidget(subtitle)
+        brand_text.addWidget(title)
+        brand_text.addWidget(subtitle)
+        brand.addLayout(brand_text)
 
         status = QVBoxLayout()
         status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        status.setSpacing(8)
+        
         badge_row = QHBoxLayout()
         badge_row.setAlignment(Qt.AlignmentFlag.AlignRight)
+        badge_row.setSpacing(10)
 
         self.system_badge = StatusBadge("Sistema", "muted")
-        self.workflow_badge = StatusBadge("Sin analisis", "muted")
+        self.workflow_badge = StatusBadge("Sin análisis", "muted")
         badge_row.addWidget(self.system_badge)
         badge_row.addWidget(self.workflow_badge)
 
@@ -165,84 +226,104 @@ class MainWindow(QMainWindow):
         status.addWidget(self.system_headline_label)
         status.addWidget(self.system_detail_label)
 
-        layout.addLayout(brand, stretch=2)
-        layout.addLayout(status, stretch=3)
+        layout.addLayout(brand, stretch=3)
+        layout.addLayout(status, stretch=2)
         return frame
 
     def _build_left_column(self) -> QWidget:
         panel = QFrame()
         panel.setObjectName("MainPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(12)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(16)
 
         image_card = QFrame()
         image_card.setObjectName("ImageCard")
         image_layout = QVBoxLayout(image_card)
+        image_layout.setContentsMargins(16, 14, 16, 16)
+        image_layout.setSpacing(10)
 
-        image_title = QLabel("Captura facial")
+        image_title = QLabel("Captura Facial")
         image_title.setObjectName("SectionTitle")
-        image_hint = QLabel("Alinea el rostro de frente, con iluminacion uniforme y sin obstrucciones.")
+        image_hint = QLabel("Alinea el rostro de frente, con iluminación uniforme y sin obstrucciones.")
         image_hint.setObjectName("ImageHint")
 
-        self.image_label = QLabel("Sin captura activa")
+        self.image_label = QLabel("Esperando fuente de captura")
         self.image_label.setObjectName("ImageView")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.image_label.setMinimumSize(640, 360)
+        self.image_label.setMinimumSize(640, 380)
 
         image_layout.addWidget(image_title)
         image_layout.addWidget(image_hint)
         image_layout.addWidget(self.image_label)
         layout.addWidget(image_card, stretch=1)
 
-        source_group = QGroupBox("Fuente de entrada")
+        source_group = QGroupBox("FUENTE DE ENTRADA")
         source_layout = QGridLayout(source_group)
+        source_layout.setSpacing(12)
+        source_layout.setContentsMargins(14, 16, 14, 14)
+        
         self.open_image_button = QPushButton("Abrir imagen")
         self.open_image_button.clicked.connect(self._open_image)
         self.camera_index_combo = QComboBox()
-        self.start_camera_button = QPushButton("Iniciar camara")
+        self.start_camera_button = QPushButton("Iniciar cámara")
         self.start_camera_button.clicked.connect(self._start_camera)
-        self.stop_camera_button = QPushButton("Detener camara")
+        self.stop_camera_button = QPushButton("Detener cámara")
         self.stop_camera_button.setProperty("role", "danger")
         self.stop_camera_button.clicked.connect(self._stop_camera_action)
 
+        cam_label = QLabel("Cámara")
+        cam_label.setObjectName("ImageHint")
+        
         source_layout.addWidget(self.open_image_button, 0, 0)
-        source_layout.addWidget(QLabel("Camara"), 0, 1)
+        source_layout.addWidget(cam_label, 0, 1)
         source_layout.addWidget(self.camera_index_combo, 0, 2)
         source_layout.addWidget(self.start_camera_button, 0, 3)
         source_layout.addWidget(self.stop_camera_button, 0, 4)
 
-        actions_group = QGroupBox("Acciones principales")
+        actions_group = QGroupBox("ACCIONES PRINCIPALES")
         actions_layout = QHBoxLayout(actions_group)
-        self.analyze_button = QPushButton("Analizar captura")
+        actions_layout.setSpacing(14)
+        actions_layout.setContentsMargins(14, 16, 14, 14)
+        
+        self.analyze_button = QPushButton("  Analizar captura  ")
         self.analyze_button.setProperty("role", "primary")
         self.analyze_button.clicked.connect(self._analyze_current_frame)
         self.freeze_button = QPushButton("Congelar captura")
         self.freeze_button.clicked.connect(self._toggle_freeze)
-        actions_layout.addWidget(self.analyze_button)
-        actions_layout.addWidget(self.freeze_button)
+        actions_layout.addWidget(self.analyze_button, stretch=2)
+        actions_layout.addWidget(self.freeze_button, stretch=1)
 
-        profile_group = QGroupBox("Perfil de analisis")
+        profile_group = QGroupBox("PERFIL DE ANÁLISIS")
         profile_layout = QGridLayout(profile_group)
+        profile_layout.setSpacing(10)
+        profile_layout.setContentsMargins(14, 16, 14, 14)
+        
         self.profile_combo = QComboBox()
-        self.profile_combo.addItems(["quality", "balanced", "fast"])
+        self.profile_combo.addItems(["Quality", "Balanced", "Fast"])
         self.profile_combo.currentTextChanged.connect(self._on_profile_changed)
-        self.live_smoothing_checkbox = QCheckBox("Suavizado temporal en flujo de camara")
+        self.live_smoothing_checkbox = QCheckBox("Suavizado temporal en flujo de cámara")
         self.live_smoothing_checkbox.setChecked(True)
-        profile_layout.addWidget(QLabel("Perfil"), 0, 0)
+        
+        profile_label = QLabel("Perfil")
+        profile_label.setObjectName("ImageHint")
+        profile_layout.addWidget(profile_label, 0, 0)
         profile_layout.addWidget(self.profile_combo, 0, 1)
         profile_layout.addWidget(self.live_smoothing_checkbox, 1, 0, 1, 2)
 
-        overlay_group = QGroupBox("Visualizacion de overlay")
+        overlay_group = QGroupBox("VISUALIZACIÓN DE OVERLAY")
         overlay_layout = QHBoxLayout(overlay_group)
+        overlay_layout.setSpacing(20)
+        overlay_layout.setContentsMargins(14, 16, 14, 14)
+        
         self.show_landmarks_checkbox = QCheckBox("Landmarks")
         self.show_landmarks_checkbox.setChecked(True)
         self.show_axis_checkbox = QCheckBox("Eje medio")
         self.show_axis_checkbox.setChecked(True)
-        self.show_pairs_checkbox = QCheckBox("Pares simetricos")
+        self.show_pairs_checkbox = QCheckBox("Pares simétricos")
         self.show_pairs_checkbox.setChecked(True)
-        self.show_guides_checkbox = QCheckBox("Guias clinicas")
+        self.show_guides_checkbox = QCheckBox("Guías clínicas")
         self.show_guides_checkbox.setChecked(True)
 
         for checkbox in (
@@ -254,26 +335,38 @@ class MainWindow(QMainWindow):
             checkbox.stateChanged.connect(self._refresh_preview)
             overlay_layout.addWidget(checkbox)
 
-        status_group = QGroupBox("Estado del sistema")
+        status_group = QGroupBox("ESTADO DEL SISTEMA")
         status_layout = QGridLayout(status_group)
-        self.status_label = QLabel("Listo para iniciar.")
+        status_layout.setSpacing(8)
+        status_layout.setContentsMargins(14, 16, 14, 14)
+        
+        self.status_label = QLabel("Listo para iniciar")
         self.origin_value_label = QLabel("Sin origen")
         self.fps_label = QLabel("0.0 FPS")
         self.latency_label = QLabel("Latencia: n/d")
 
-        status_layout.addWidget(QLabel("Resumen"), 0, 0)
+        lbl_resumen = QLabel("Resumen")
+        lbl_resumen.setObjectName("ImageHint")
+        lbl_origen = QLabel("Origen")
+        lbl_origen.setObjectName("ImageHint")
+        lbl_desempeno = QLabel("Desempeño")
+        lbl_desempeno.setObjectName("ImageHint")
+        lbl_analisis = QLabel("Análisis")
+        lbl_analisis.setObjectName("ImageHint")
+
+        status_layout.addWidget(lbl_resumen, 0, 0)
         status_layout.addWidget(self.status_label, 0, 1)
-        status_layout.addWidget(QLabel("Origen"), 1, 0)
+        status_layout.addWidget(lbl_origen, 1, 0)
         status_layout.addWidget(self.origin_value_label, 1, 1)
-        status_layout.addWidget(QLabel("Desempeno"), 2, 0)
+        status_layout.addWidget(lbl_desempeno, 2, 0)
         status_layout.addWidget(self.fps_label, 2, 1)
-        status_layout.addWidget(QLabel("Analisis"), 3, 0)
+        status_layout.addWidget(lbl_analisis, 3, 0)
         status_layout.addWidget(self.latency_label, 3, 1)
 
         controls_widget = QWidget()
         controls_layout = QVBoxLayout(controls_widget)
         controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(12)
+        controls_layout.setSpacing(14)
         controls_layout.addWidget(source_group)
         controls_layout.addWidget(actions_group)
         controls_layout.addWidget(profile_group)
@@ -291,7 +384,7 @@ class MainWindow(QMainWindow):
         self.left_splitter.setChildrenCollapsible(False)
         self.left_splitter.addWidget(image_card)
         self.left_splitter.addWidget(controls_scroll)
-        self.left_splitter.setStretchFactor(0, 3)
+        self.left_splitter.setStretchFactor(0, 4)
         self.left_splitter.setStretchFactor(1, 2)
 
         layout.addWidget(self.left_splitter, 1)
@@ -301,36 +394,43 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(360)
-        scroll.setMaximumWidth(520)
-        scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        scroll.setMinimumWidth(500)
+        # Sin máximo para que use todo el espacio disponible
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(12)
+        content_layout.setContentsMargins(8, 0, 0, 0)
+        content_layout.setSpacing(14)
 
+        # Panel Hero de Resultado Principal
         hero_card = QFrame()
         hero_card.setObjectName("ResultHeroCard")
         hero_layout = QVBoxLayout(hero_card)
-        hero_layout.setContentsMargins(16, 14, 16, 14)
-        hero_layout.setSpacing(8)
+        hero_layout.setContentsMargins(20, 18, 20, 18)
+        hero_layout.setSpacing(12)
 
         hero_header = QHBoxLayout()
         self.result_badge = StatusBadge("Resultado orientativo", "muted")
         hero_header.addWidget(self.result_badge)
         hero_header.addStretch(1)
+        
+        # Indicador de análisis en progreso (animado)
+        self._thinking_indicator = QLabel("⚡ Analizando")
+        self._thinking_indicator.setObjectName("ThinkingIndicator")
+        self._thinking_indicator.hide()
+        hero_header.addWidget(self._thinking_indicator)
 
-        self.hero_title_label = QLabel("Sin analisis de simetria")
+        self.hero_title_label = QLabel("Sin análisis de simetría")
         self.hero_title_label.setObjectName("HeroTitle")
         self.hero_title_label.setWordWrap(True)
         self.hero_subtitle_label = QLabel(
-            "Captura una imagen frontal o congela la camara para obtener una lectura orientativa."
+            "Captura una imagen frontal o congela la cámara para obtener una lectura orientativa."
         )
         self.hero_subtitle_label.setObjectName("HeroSubtitle")
         self.hero_subtitle_label.setWordWrap(True)
 
-        self.hero_next_step_label = QLabel("Siguiente paso: iniciar una captura valida para analisis.")
+        self.hero_next_step_label = QLabel("Siguiente paso: iniciar una captura válida para análisis.")
         self.hero_next_step_label.setObjectName("HeroNextStep")
         self.hero_next_step_label.setWordWrap(True)
 
@@ -340,23 +440,24 @@ class MainWindow(QMainWindow):
         hero_layout.addWidget(self.hero_next_step_label)
         content_layout.addWidget(hero_card)
 
+        # Indicadores de Tamizaje
         kpi_card = QFrame()
         kpi_card.setObjectName("Card")
         kpi_layout = QVBoxLayout(kpi_card)
-        kpi_layout.setContentsMargins(14, 14, 14, 14)
-        kpi_layout.setSpacing(10)
-        kpi_title = QLabel("Indicadores de tamizaje")
+        kpi_layout.setContentsMargins(18, 16, 18, 16)
+        kpi_layout.setSpacing(14)
+        kpi_title = QLabel("Indicadores de Tamizaje")
         kpi_title.setObjectName("SectionTitle")
 
         kpi_grid = QGridLayout()
-        kpi_grid.setHorizontalSpacing(10)
-        kpi_grid.setVerticalSpacing(10)
+        kpi_grid.setHorizontalSpacing(12)
+        kpi_grid.setVerticalSpacing(12)
         self.kpi_cards = {
-            "score": KpiCard("Puntaje general"),
-            "quality": KpiCard("Calidad de captura"),
-            "reliability": KpiCard("Confiabilidad"),
-            "attention": KpiCard("Atencion sugerida"),
-            "alerts": KpiCard("Alertas"),
+            "score": KpiCard("PUNTAJE"),
+            "quality": KpiCard("CALIDAD"),
+            "reliability": KpiCard("CONFIABILIDAD"),
+            "attention": KpiCard("ATENCIÓN"),
+            "alerts": KpiCard("ALERTAS"),
         }
 
         kpi_grid.addWidget(self.kpi_cards["score"], 0, 0)
@@ -371,15 +472,17 @@ class MainWindow(QMainWindow):
         kpi_layout.addLayout(kpi_grid)
         content_layout.addWidget(kpi_card)
 
+        # Interpretación Clínica Orientativa
         interpretation_card = QFrame()
         interpretation_card.setObjectName("Card")
         interpretation_layout = QVBoxLayout(interpretation_card)
-        interpretation_layout.setContentsMargins(14, 14, 14, 14)
-        interpretation_title = QLabel("Interpretacion clinica orientativa")
+        interpretation_layout.setContentsMargins(18, 16, 18, 16)
+        interpretation_layout.setSpacing(10)
+        interpretation_title = QLabel("Interpretación Clínica Orientativa")
         interpretation_title.setObjectName("SectionTitle")
 
         self.interpretation_label = QLabel(
-            "El resultado se mostrara en lenguaje orientativo para apoyo al tamizaje temprano."
+            "El resultado se mostrará en lenguaje orientativo para apoyo al tamizaje temprano."
         )
         self.interpretation_label.setWordWrap(True)
 
@@ -387,64 +490,90 @@ class MainWindow(QMainWindow):
         interpretation_layout.addWidget(self.interpretation_label)
         content_layout.addWidget(interpretation_card)
 
+        # Hallazgos por Región Facial
         findings_card = QFrame()
         findings_card.setObjectName("Card")
         findings_layout = QGridLayout(findings_card)
-        findings_layout.setContentsMargins(14, 14, 14, 14)
-        findings_layout.setHorizontalSpacing(10)
-        findings_layout.setVerticalSpacing(8)
+        findings_layout.setContentsMargins(18, 16, 18, 16)
+        findings_layout.setHorizontalSpacing(14)
+        findings_layout.setVerticalSpacing(12)
 
-        findings_title = QLabel("Hallazgos por region facial")
+        findings_title = QLabel("Hallazgos por Región Facial")
         findings_title.setObjectName("SectionTitle")
         findings_layout.addWidget(findings_title, 0, 0, 1, 3)
 
         regions = [
-            ("ocular", "Region ocular"),
+            ("ocular", "Región ocular"),
             ("cejas", "Cejas"),
             ("boca", "Boca y comisuras"),
-            ("alineacion", "Alineacion general"),
+            ("alineacion", "Alineación general"),
         ]
 
         for row, (key, title) in enumerate(regions, start=1):
             label = QLabel(title)
+            label.setMinimumWidth(120)
             badge = StatusBadge("Sin lectura", "muted")
-            badge.setMaximumWidth(150)
-            detail = QLabel("Pendiente de analisis")
+            badge.setMinimumWidth(100)
+            badge.setMaximumWidth(130)
+            detail = QLabel("Pendiente de análisis")
             detail.setWordWrap(True)
+            detail.setObjectName("ImageHint")
+            detail.setMinimumWidth(150)
             findings_layout.addWidget(label, row, 0)
             findings_layout.addWidget(badge, row, 1)
             findings_layout.addWidget(detail, row, 2)
+            findings_layout.setColumnStretch(2, 1)  # La columna de detalle se expande
             self.region_rows[key] = (badge, detail)
 
         content_layout.addWidget(findings_card)
 
+        # Métricas Avanzadas - Diseño mejorado
         metrics_card = QFrame()
-        metrics_card.setObjectName("Card")
+        metrics_card.setObjectName("MetricsCard")
         metrics_layout = QVBoxLayout(metrics_card)
-        metrics_layout.setContentsMargins(14, 14, 14, 14)
-        metrics_title = QLabel("Metricas avanzadas")
-        metrics_title.setObjectName("SectionTitle")
+        metrics_layout.setContentsMargins(20, 18, 20, 18)
+        metrics_layout.setSpacing(10)
+        
+        # Header con título
+        metrics_title = QLabel("MÉTRICAS")
+        metrics_title.setObjectName("MetricsTitle")
         metrics_layout.addWidget(metrics_title)
+        
+        # Separador visual
+        metrics_separator = QFrame()
+        metrics_separator.setObjectName("MetricsSeparator")
+        metrics_separator.setFixedHeight(1)
+        metrics_layout.addWidget(metrics_separator)
 
+        # Métricas en una sola columna para mejor legibilidad
         for metric_key, metric_title in self.METRIC_LABELS.items():
-            row = QWidget()
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_frame = QFrame()
+            row_frame.setObjectName("MetricRow")
+            row_layout = QHBoxLayout(row_frame)
+            row_layout.setContentsMargins(12, 8, 12, 8)
+            row_layout.setSpacing(12)
+            
             name_label = QLabel(metric_title)
-            name_label.setWordWrap(True)
-            name_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+            name_label.setObjectName("MetricName")
+            name_label.setMinimumWidth(140)
+            
             bar = QProgressBar()
             bar.setRange(0, 100)
+            bar.setFixedHeight(8)
+            bar.setObjectName("MetricBar")
+            
             value_label = QLabel("--")
-            value_label.setMinimumWidth(52)
+            value_label.setObjectName("MetricValue")
+            value_label.setMinimumWidth(55)
             value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-            row_layout.addWidget(name_label, stretch=2)
-            row_layout.addWidget(bar, stretch=3)
-            row_layout.addWidget(value_label)
-            metrics_layout.addWidget(row)
+            row_layout.addWidget(name_label, stretch=0)
+            row_layout.addWidget(bar, stretch=1)
+            row_layout.addWidget(value_label, stretch=0)
+            
+            metrics_layout.addWidget(row_frame)
             self.metric_rows[metric_key] = (bar, value_label)
-
+        
         content_layout.addWidget(metrics_card)
 
         self.tech_text = QTextEdit()
@@ -627,14 +756,19 @@ class MainWindow(QMainWindow):
             mode = "live"
 
         self._set_workflow_badge("Analizando", "info")
+        self._start_thinking_animation()
+        
         result = self.analyze_face_use_case.execute(frame_to_analyze, mode=mode)
         self.last_result = result
+        
+        self._stop_thinking_animation()
 
         total_latency = result.timings_ms.get("total")
         if total_latency is not None:
             self.latency_label.setText(f"Latencia: {total_latency:.1f} ms")
 
         self._render_results(result)
+        self._pulse_result_card()  # Efecto visual al mostrar resultado
         self._set_status(result.user_message)
         self._refresh_preview()
 
@@ -1122,7 +1256,9 @@ class MainWindow(QMainWindow):
 
     def _on_profile_changed(self, profile: str) -> None:
         try:
-            self.face_detector.set_profile(profile)  # type: ignore[arg-type]
+            # Convert to lowercase to match PROFILE_SETTINGS keys
+            profile_key = profile.lower()
+            self.face_detector.set_profile(profile_key)  # type: ignore[arg-type]
             self._set_status(f"Perfil de analisis activo: {profile}")
             self._set_system_state("info", "Perfil actualizado", f"Perfil '{profile}' activo.")
         except Exception as exc:  # pragma: no cover
@@ -1152,22 +1288,19 @@ class MainWindow(QMainWindow):
             self.freeze_button.setText("Congelar captura")
 
     def _apply_responsive_geometry(self) -> None:
-        if self.body_splitter is None:
+        if not hasattr(self, 'body_splitter') or self.body_splitter is None:
             return
 
         width = max(self.width(), 1024)
-        if width >= 2200:
-            right_target = 470
-        elif width >= 1800:
-            right_target = 450
-        elif width >= 1500:
-            right_target = 430
-        elif width >= 1280:
-            right_target = 400
-        else:
-            right_target = 360
-
-        left_target = max(width - right_target - 120, 620)
+        # Columna derecha ocupa 60% del espacio disponible (sin margins)
+        usable_width = width - 50  # Descontar márgenes
+        right_target = int(usable_width * 0.58)
+        left_target = int(usable_width * 0.42)
+        
+        # Mínimos para que no se corten
+        left_target = max(left_target, 420)
+        right_target = max(right_target, 520)
+        
         self.body_splitter.setSizes([left_target, right_target])
 
         if self.left_splitter is not None:
@@ -1186,6 +1319,63 @@ class MainWindow(QMainWindow):
         self._refresh_preview()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._stop_thinking_animation()
         self._stop_camera()
         self.face_detector.close()
         super().closeEvent(event)
+    
+    # =========================================================================
+    # ANIMACIONES Y EFECTOS VISUALES
+    # =========================================================================
+    
+    def _start_thinking_animation(self) -> None:
+        """Inicia la animación de 'pensando' durante el análisis."""
+        if self._thinking_indicator is not None:
+            self._thinking_indicator.show()
+            self._thinking_dots = 0
+            
+            # Timer para animar los puntos
+            if self._thinking_timer is None:
+                self._thinking_timer = QTimer(self)
+                self._thinking_timer.timeout.connect(self._update_thinking_animation)
+            self._thinking_timer.start(300)
+    
+    def _update_thinking_animation(self) -> None:
+        """Actualiza el texto animado del indicador de pensamiento."""
+        if self._thinking_indicator is None:
+            return
+        
+        self._thinking_dots = (self._thinking_dots + 1) % 4
+        dots = "." * self._thinking_dots
+        icons = ["⚡", "🧠", "✨", "🔍"]
+        icon = icons[self._thinking_dots]
+        self._thinking_indicator.setText(f"{icon} Analizando{dots}")
+    
+    def _stop_thinking_animation(self) -> None:
+        """Detiene la animación de pensamiento."""
+        if self._thinking_timer is not None:
+            self._thinking_timer.stop()
+        if self._thinking_indicator is not None:
+            self._thinking_indicator.hide()
+    
+    def _pulse_result_card(self) -> None:
+        """Efecto de pulso sutil en el resultado para captar atención."""
+        try:
+            # Buscar el hero card
+            hero_card = self.findChild(QFrame, "ResultHeroCard")
+            if hero_card is None:
+                return
+            
+            # Crear efecto de opacidad
+            opacity_effect = QGraphicsOpacityEffect(hero_card)
+            hero_card.setGraphicsEffect(opacity_effect)
+            
+            # Animación de fade-in
+            self._pulse_animation = QPropertyAnimation(opacity_effect, b"opacity")
+            self._pulse_animation.setDuration(400)
+            self._pulse_animation.setStartValue(0.7)
+            self._pulse_animation.setEndValue(1.0)
+            self._pulse_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._pulse_animation.start()
+        except Exception:
+            pass  # Silently ignore animation errors

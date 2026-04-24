@@ -60,10 +60,26 @@ class MediapipeFaceDetector:
         if image_bgr.ndim != 3 or image_bgr.shape[2] != 3:
             return None
 
+        # Reinitialize FaceMesh if it was closed or corrupted
+        if self._face_mesh is None:
+            self._face_mesh = self._create_face_mesh(self._profile)
+
         height, width = image_bgr.shape[:2]
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-        results = self._face_mesh.process(image_rgb)
+        
+        try:
+            results = self._face_mesh.process(image_rgb)
+        except ValueError as e:
+            # Handle "_graph is None" error by reinitializing
+            if "_graph is None" in str(e):
+                self.logger.warning("FaceMesh graph was None, reinitializing...")
+                self._face_mesh = self._create_face_mesh(self._profile)
+                results = self._face_mesh.process(image_rgb)
+            else:
+                raise
+        
         if not results.multi_face_landmarks:
+            return None
             return None
 
         face_landmarks = results.multi_face_landmarks[0]
@@ -83,7 +99,11 @@ class MediapipeFaceDetector:
 
     def close(self) -> None:
         if self._face_mesh is not None:
-            self._face_mesh.close()
+            try:
+                self._face_mesh.close()
+            except Exception:
+                pass
+            self._face_mesh = None
 
     def _create_face_mesh(self, profile: DetectorProfile):
         settings = PROFILE_SETTINGS[profile]
